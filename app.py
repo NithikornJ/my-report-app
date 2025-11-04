@@ -7,29 +7,73 @@ import datetime
 
 # --- (ฟังก์ชัน create_multisheet_excel เหมือนเดิมเป๊ะๆ) ---
 @st.cache_data
-def create_multisheet_excel(df_summary_total, df_all_day, list_of_rights):
+def create_multisheet_excel(df_summary_total, df_all_day, list_of_rights, selected_date):
     """
     สร้างไฟล์ Excel ในหน่วยความจำ (BytesIO)
+    - (ใหม่) เพิ่มหัวข้อวันที่
+    - (ใหม่) เพิ่ม Hyperlink ใน Sheet สรุป
+    - Sheet 1: สรุปยอด (พร้อม Total)
+    - Sheet 2: ข้อมูลทั้งหมด
+    - Sheet 3+: ข้อมูลตามสิทธิ
     """
+    
     output = io.BytesIO()
     
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        
+        # --- (ใหม่) ดึง Workbook และสร้าง Formats ---
         workbook = writer.book
+        # Format วันที่ (dd/mm/yyyy)
         date_format = workbook.add_format({'num_format': 'dd/mm/yyyy'})
+        # Format หัวข้อตัวหนา
+        header_format = workbook.add_format({'bold': True, 'font_size': 14, 'align': 'center'})
+        # Format สำหรับ Hyperlink (สีฟ้า, ขีดเส้นใต้)
+        link_format = workbook.add_format({'color': 'blue', 'underline': 1})
         
-        # Sheet 1: สรุปยอด
-        df_summary_total.to_excel(writer, sheet_name='สรุปยอด (Sheet1)', index=False)
+        # --- Sheet 1: สรุปยอด ---
+        sheet1_name = 'สรุปยอด (Sheet1)'
+        df_summary_total.to_excel(writer, sheet_name=sheet1_name, index=False, startrow=2) # (ใหม่) เริ่มที่แถวที่ 2
         
-        # Sheet 2: ข้อมูลทั้งหมด
-        df_all_day.to_excel(writer, sheet_name='ข้อมูลทั้งหมด (Sheet2)', index=False)
-        worksheet2 = writer.sheets['ข้อมูลทั้งหมด (Sheet2)']
+        worksheet1 = writer.sheets[sheet1_name]
+        
+        # --- (ใหม่) เพิ่มหัวข้อวันที่ ---
+        report_title = f"รายงานสรุปยอด ประจำวันที่ {selected_date.strftime('%d %B %Y')}"
+        # .merge_range(row_start, col_start, row_end, col_end, 'Text', format)
+        worksheet1.merge_range(0, 0, 0, 5, report_title, header_format) # ผสาน 5 คอลัมน์แรกสำหรับหัวข้อ
+        
+        # --- (ใหม่) สร้าง Hyperlinks ---
+        # เราต้องหาคอลัมน์ "สิทธิ" (ปกติคือคอลัมน์ A หรือ index 0)
+        # เราเริ่มเขียนข้อมูลที่ startrow=2 (แถวที่ 3 ใน Excel) + 1 แถวสำหรับ Header
+        # ดังนั้น ข้อมูลแรก (เช่น "ประกันสังคม") จะอยู่ที่แถว index 3 (แถวที่ 4 ใน Excel)
+        
+        # วนลูปตามรายชื่อสิทธิ (ไม่รวมแถว 'รวมทั้งหมด')
+        for i, right in enumerate(list_of_rights):
+            
+            # สร้างชื่อ Sheet ที่ปลอดภัย (ต้องตรงกับตอนสร้าง Sheet ย่อย)
+            safe_sheet_name = str(right).replace('[','').replace(']','').replace('/','-').replace("'", "")[:30]
+            
+            # สร้างลิงก์แบบ Excel: 'sheet_name!cell'
+            link_target = f"internal:'{safe_sheet_name}'!A1" # ลิงก์ไปที่เซลล์ A1 ของ Sheet นั้น
+            
+            # เขียนทับลงไปในเซลล์ "สิทธิ"
+            # .write_url(row, col, url, format, display_text)
+            # row = i + 3 (3 คือแถวเริ่มต้น = 1 (หัวข้อ) + 1 (Header ตาราง) + 1 (แถว 0-index))
+            # (ปรับ startrow=2 + 1 header = แถวที่ 3)
+            row_index_in_excel = i + 3 
+            worksheet1.write_url(row_index_in_excel, 0, link_target, link_format, right)
+
+        
+        # --- Sheet 2: ข้อมูลทั้งหมด ---
+        sheet2_name = 'ข้อมูลทั้งหมด (Sheet2)'
+        df_all_day.to_excel(writer, sheet_name=sheet2_name, index=False)
+        worksheet2 = writer.sheets[sheet2_name]
         try:
             date_col_index = df_all_day.columns.get_loc('วันเข้า')
             worksheet2.set_column(date_col_index, date_col_index, 12, date_format)
         except KeyError:
-            pass # ไม่ต้องเตือน
+            pass 
 
-        # Sheet 3+: วนลูปสร้างตามสิทธิ
+        # --- Sheet 3+: วนลูปสร้างตามสิทธิ ---
         for right in list_of_rights:
             df_right_detail = df_all_day[df_all_day['สิทธิ'] == right].copy()
             
@@ -48,7 +92,7 @@ def create_multisheet_excel(df_summary_total, df_all_day, list_of_rights):
             else:
                 df_right_detail_with_total = df_right_detail 
 
-            safe_sheet_name = str(right).replace('[','').replace(']','').replace('/','-')[:30]
+            safe_sheet_name = str(right).replace('[','').replace(']','').replace('/','-').replace("'", "")[:30]
             df_right_detail_with_total.to_excel(writer, sheet_name=safe_sheet_name, index=False)
             
             worksheet_detail = writer.sheets[safe_sheet_name]
@@ -56,7 +100,7 @@ def create_multisheet_excel(df_summary_total, df_all_day, list_of_rights):
                 date_col_index_detail = df_right_detail_with_total.columns.get_loc('วันเข้า')
                 worksheet_detail.set_column(date_col_index_detail, date_col_index_detail, 12, date_format)
             except KeyError:
-                pass # ไม่ต้องเตือน
+                pass
 
     processed_data = output.getvalue()
     return processed_data
@@ -126,7 +170,7 @@ if uploaded_file is not None:
         # --- 7. ปุ่มดาวน์โหลดไฟล์ Excel ---
         st.header("3. ดาวน์โหลดรายงาน")
         list_of_rights = df_summary.index.unique().tolist()
-        excel_data = create_multisheet_excel(df_summary_with_total, df_today, list_of_rights)
+        excel_data = create_multisheet_excel(df_summary_with_total, df_today, list_of_rights, selected_date)
         
         st.download_button(
             label=f"📥 ดาวน์โหลดไฟล์ Excel ทั้งหมดของวันที่ {selected_date.strftime('%d-%m-%Y')}",
